@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Author: Dhruva Krishnamurthy <dhruvakm@gmail.com>
+# Description:
+#   o Script to sync youtube playlists incrementally
+#   o Does not delete local file yet on track removed from playlist
+
+# Requires: 'brew install youtube-dl ffmpeg AtomicParsley'
+# Play list format:
+#	Name: playlist.txt
+#	Format: Folder#Link_To_Playlist
+#	Example:
+#		Relaxing#https://www.youtube.com/playlist?list=PLi1G_ofYu0uVzWvYqzg2qSIEiL8IwUPrZ
+#		Instrumental#https://www.youtube.com/playlist?list=PLi1G_ofYu0uU6S-UeWD80b2-OYRGwyMV_
+
+TMPDIR=${TMPDIR:-/tmp}
+
+# Common options to youtube-dl
+OPTS="-q -x --ignore-errors --skip-unavailable-fragments --no-warnings --no-mtime  --no-post-overwrites"
+OPTS="${OPTS} --external-downloader=aria2c --external-downloader-args=--file-allocation=none --external-downloader-args=-j8 --external-downloader-args=-x8"
+OPTS="${OPTS} --prefer-ffmpeg --hls-prefer-ffmpeg --audio-format m4a --audio-quality 3"
+OPTS="${OPTS} --embed-thumbnail --add-metadata --metadata-from-title \"%(title)s\""
+
+# Cleanup leftover from previous run - doing it here allows debugging
+rm -fr ${TMPDIR}/synctube.*
+
+CACHE=`echo ${TMPDIR}/synctube.$$|tr -s '/'`
+rm -fr ${CACHE}
+mkdir ${CACHE}
+
+echo "Cache folder: ${CACHE}"
+echo "Options: ${OPTS}"
+
+if [ "${ACTION}" = "echo" ] ; then
+    set -x
+fi
+
+# Read playlists for sync from file or argument
+INPUT="$*"
+if [[ -z ${INPUT} && -f playlist.txt ]] ; then
+    INPUT=`grep -vE "^[ \t]*#" playlist.txt|tr '[\t ]' '_'|sed 's/\&/\\&/g'`
+fi
+
+for ent in ${INPUT} ; do
+    dir=`echo $ent|cut -d'#' -f1`
+    url=`echo $ent|cut -d'#' -f2`
+
+    if [ ! -d ${dir} ] ; then
+        mkdir ${dir}
+    fi
+
+    2>/dev/null youtube-dl -i --get-id ${url} > ${CACHE}/${dir}.id.txt
+
+    for id in `cat ${CACHE}/${dir}.id.txt` ; do
+        compgen -G "${dir}/*-${id}.m4a" > /dev/null
+        if [ $? -ne 0 ] ; then
+            echo "https://youtu.be/${id}" >> ${CACHE}/${dir}.playlist
+        fi
+    done
+
+    if [ -f ${CACHE}/${dir}.playlist ] ; then
+        echo "Processing ${dir}:"
+        cat ${CACHE}/${dir}.playlist | nl
+        ${ACTION} youtube-dl ${OPTS} -o ${dir}/"%(title)s-%(id)s.%(ext)s" --batch-file ${CACHE}/${dir}.playlist &
+    fi
+done
+
+wait
+set +x
